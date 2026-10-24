@@ -46,6 +46,14 @@ The `Build and release` workflow supports reviewed manual dispatch. First update
 
 The formula is arm64-only and declares macOS 15 as its minimum. The tap token should be limited to `magalab/homebrew-tap`.
 
+Install the published formula with:
+
+```sh
+brew install magalab/homebrew-tap/ffmpeg
+```
+
+On Homebrew versions that require explicit trust for third-party taps, trust only this formula with `brew trust --formula magalab/tap/ffmpeg` before installing it. Homebrew may show the canonical tap name `magalab/tap` in its trust prompt.
+
 ## License
 
 This FFmpeg build is distributed under GPL version 2 or later because it links x264 and x265, which are GPL-2.0-or-later. The release carries exact corresponding FFmpeg and linked library source materials, build script, configuration, and license notices, including SVT-AV1's patent license. Review the generated materials and the effect of GPL distribution on any application that bundles these binaries before each release.

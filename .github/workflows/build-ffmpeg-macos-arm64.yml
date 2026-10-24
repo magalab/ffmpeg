@@ -234,5 +234,6 @@ jobs:
         run: |
           set -euo pipefail
           brew tap magalab/homebrew-tap
+          brew trust --formula magalab/tap/ffmpeg
           brew install magalab/homebrew-tap/ffmpeg
           brew test ffmpeg

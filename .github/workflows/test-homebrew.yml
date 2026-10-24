@@ -1,0 +1,20 @@
+name: Test Homebrew formula
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-homebrew:
+    name: Install and test published formula
+    runs-on: macos-15
+    steps:
+      - name: Install and test the tap formula
+        run: |
+          set -euo pipefail
+          brew tap magalab/homebrew-tap
+          brew trust --formula magalab/tap/ffmpeg
+          brew install magalab/homebrew-tap/ffmpeg
+          brew test ffmpeg
