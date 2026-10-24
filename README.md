@@ -11,6 +11,7 @@ Build and distribute `ffmpeg` and `ffprobe` for Apple Silicon Macs running macOS
 - MP3 encoding uses LAME (`libmp3lame`), Opus uses `libopus`, and Vorbis uses `libvorbis`. The native Opus and Vorbis encoders remain experimental; use the external encoders for production output.
 - The build enables GPL because x264 and x265 are GPL-2.0-or-later. Each release includes the exact FFmpeg and all linked library sources, checksums, build script, license texts, configure output, and build metadata.
 - External libraries are disabled from auto-detection. Pinned x264, LAME, Opus, x265, libvpx, libogg, libvorbis, and SVT-AV1 sources are built as static libraries, so the binaries have no Homebrew runtime paths.
+- The build removes libvorbis 1.3.7's obsolete `-force_cpusubtype_ALL` Darwin flag because current Apple linkers reject it; the applied adjustment is recorded in build metadata.
 
 This profile follows common local conversion use, but does not yet match every external encoder in the existing system FFmpeg. It omits AOM AV1, OpenJPEG, WebP, VVenc, Kvazaar, HAP, and some specialist codecs. Availability and performance of Apple hardware encoders depend on the Mac model and macOS. Consult `ffmpeg -encoders`, `ffmpeg -decoders`, and `ffmpeg -filters` for the exact compiled lists.
 

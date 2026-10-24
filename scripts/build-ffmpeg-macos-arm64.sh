@@ -167,6 +167,9 @@ make install 2>&1 | tee "$BUILD_ROOT/libogg-install.log"
 
 tar -xJf "$LIBVORBIS_ARCHIVE" -C "$BUILD_ROOT"
 LIBVORBIS_SOURCE_DIR="$BUILD_ROOT/libvorbis-$LIBVORBIS_VERSION"
+# libvorbis 1.3.7 hardcodes this legacy Darwin flag, which current Apple ld rejects.
+sed -i '' 's/ -force_cpusubtype_ALL//g' "$LIBVORBIS_SOURCE_DIR/configure"
+sed -i '' 's/ -force_cpusubtype_ALL//g' "$LIBVORBIS_SOURCE_DIR/configure.ac"
 cd "$LIBVORBIS_SOURCE_DIR"
 ./configure --prefix="$DEPS_PREFIX" --enable-static --disable-shared --with-pic \
   2>&1 | tee "$BUILD_ROOT/libvorbis-configure.log"
@@ -348,6 +351,7 @@ cp "$ROOT_DIR/scripts/build-ffmpeg-macos-arm64.sh" "$PACKAGE_ROOT/share/ffmpeg-b
   printf 'libvorbis_version=%s\n' "$LIBVORBIS_VERSION"
   printf 'libvorbis_source_url=%s\n' "$LIBVORBIS_URL"
   printf 'libvorbis_source_sha256=%s\n' "$LIBVORBIS_SOURCE_SHA256"
+  printf 'libvorbis_macos_patch=removed unsupported -force_cpusubtype_ALL flag from configure and configure.ac\n'
   printf 'svt_av1_version=%s\n' "$SVT_AV1_VERSION"
   printf 'svt_av1_source_url=%s\n' "$SVT_AV1_URL"
   printf 'svt_av1_source_sha256=%s\n' "$SVT_AV1_SOURCE_SHA256"
