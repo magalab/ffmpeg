@@ -84,8 +84,12 @@ class Ffmpeg < Formula
 end
 EOF
 
-brew style --formula "$TAP_DIRECTORY/Formula/ffmpeg.rb"
-brew audit --formula "$TAP_DIRECTORY/Formula/ffmpeg.rb"
+brew tap magalab/homebrew-tap
+BREW_TAP_DIRECTORY="$(brew --repository magalab/homebrew-tap)"
+mkdir -p "$BREW_TAP_DIRECTORY/Formula"
+cp "$TAP_DIRECTORY/Formula/ffmpeg.rb" "$BREW_TAP_DIRECTORY/Formula/ffmpeg.rb"
+brew style --formula magalab/homebrew-tap/ffmpeg
+brew audit --formula magalab/homebrew-tap/ffmpeg
 if [[ "$PUBLISH_TAP" == false ]]; then
   printf 'Tap formula generated and checked; no tap commit or push requested.\n'
   exit 0
