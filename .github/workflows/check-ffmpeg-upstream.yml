@@ -1,0 +1,38 @@
+name: Check official FFmpeg releases
+
+on:
+  schedule:
+    - cron: '17 8 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Compare official release tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          latest="$(curl --fail --location --retry 3 https://ffmpeg.org/releases/ \
+            | python3 -c 'import re,sys; from html.parser import HTMLParser; s=sys.stdin.read(); versions={tuple(map(int,m.split("."))) for m in re.findall(r"ffmpeg-(\d+(?:\.\d+){1,2})\.tar\.xz",s)}; print(".".join(map(str,max(versions))) if versions else "")')"
+          current="$(tr -d '[:space:]' < versions/current-ffmpeg-version.txt)"
+          [[ -n "$latest" && -n "$current" ]]
+          if [[ "$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -n 1)" == "$latest" && "$latest" != "$current" ]]; then
+            title="Review FFmpeg upstream release $latest"
+            existing="$(gh issue list --state open --search "$title in:title" --json title --jq 'length')"
+            if [[ "$existing" == 0 ]]; then
+              printf '%s\n\n%s\n%s\n\n%s\n' \
+                'A newer stable version is listed by the official FFmpeg release archive: https://ffmpeg.org/releases/' \
+                "Current reviewed project baseline: $current" \
+                "New upstream release: $latest" \
+                'Review the official release, update `versions/current-ffmpeg-version.txt`, then run the `Build and release` workflow manually with the exact version. That workflow verifies the official source signature and calculates the source SHA-256. This check does not publish or change the formula.' \
+                > "$RUNNER_TEMP/issue-body.md"
+              gh issue create --title "$title" --body-file "$RUNNER_TEMP/issue-body.md"
+            fi
+          fi

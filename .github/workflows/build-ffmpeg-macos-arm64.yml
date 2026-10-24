@@ -1,0 +1,212 @@
+name: Build and release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact official FFmpeg release version, without a v prefix
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Resolve and validate release inputs
+        id: release
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ -n "$HOMEBREW_TAP_TOKEN" ]] || { echo 'HOMEBREW_TAP_TOKEN must be configured before release.' >&2; exit 1; }
+          version="$INPUT_VERSION"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]
+          current="$(tr -d '[:space:]' < versions/current-ffmpeg-version.txt)"
+          [[ "$version" == "$current" ]] || {
+            echo "Requested FFmpeg $version does not match reviewed baseline $current; update versions/current-ffmpeg-version.txt first." >&2
+            exit 1
+          }
+          tag="ffmpeg-v$version"
+          existing="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$tag" \
+            --jq "[.[] | select(.ref == \"refs/tags/$tag\")] | length")"
+          [[ "$existing" == 0 ]] || { echo "Git tag $tag already exists." >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Verify official FFmpeg source signature
+        id: source
+        shell: bash
+        env:
+          FFMPEG_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          if ! command -v gpg >/dev/null 2>&1; then
+            brew install gnupg
+          fi
+          source="$RUNNER_TEMP/ffmpeg-$FFMPEG_VERSION.tar.xz"
+          signature="$source.asc"
+          key="$RUNNER_TEMP/ffmpeg-devel.asc"
+          curl --fail --location --retry 3 --output "$source" "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz"
+          curl --fail --location --retry 3 --output "$signature" "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz.asc"
+          curl --fail --location --retry 3 --output "$key" https://ffmpeg.org/ffmpeg-devel.asc
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          mkdir -m 700 -p "$GNUPGHOME"
+          gpg --batch --homedir "$GNUPGHOME" --import "$key"
+          expected_fingerprint=FCF986EA15E6E293A5644F10B4322F04D67658D8
+          actual_fingerprint="$(gpg --batch --homedir "$GNUPGHOME" --with-colons --fingerprint "$expected_fingerprint" | awk -F: '$1 == "fpr" { print $10; exit }')"
+          [[ "$actual_fingerprint" == "$expected_fingerprint" ]]
+          gpg --batch --homedir "$GNUPGHOME" --verify "$signature" "$source"
+          actual_sha256="$(shasum -a 256 "$source" | awk '{print $1}')"
+          echo "sha256=$actual_sha256" >> "$GITHUB_OUTPUT"
+          echo "archive=$source" >> "$GITHUB_OUTPUT"
+          echo "signature=$signature" >> "$GITHUB_OUTPUT"
+
+      - name: Confirm native arm64 runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == arm64 ]] || { echo 'Build must run natively on arm64.' >&2; exit 1; }
+          translated="$(sysctl -in sysctl.proc_translated 2>/dev/null || printf '0')"
+          [[ "$translated" != 1 ]] || { echo 'Rosetta translation is not allowed for this build.' >&2; exit 1; }
+
+      - name: Build FFmpeg
+        env:
+          FFMPEG_VERSION: ${{ steps.release.outputs.version }}
+          FFMPEG_SHA256: ${{ steps.source.outputs.sha256 }}
+          FFMPEG_SOURCE_ARCHIVE: ${{ steps.source.outputs.archive }}
+          FFMPEG_SOURCE_SIGNATURE: ${{ steps.source.outputs.signature }}
+          JOBS: "2"
+        run: ./scripts/build-ffmpeg-macos-arm64.sh
+
+      - name: Smoke-test package on macOS arm64
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="dist/ffmpeg-${{ steps.release.outputs.version }}-macos15-arm64.tar.gz"
+          package="$RUNNER_TEMP/ffmpeg-package"
+          mkdir -p "$package"
+          tar -xzf "$archive" -C "$package"
+          ffmpeg="$package/bin/ffmpeg"
+          ffprobe="$package/bin/ffprobe"
+          for binary in "$ffmpeg" "$ffprobe"; do
+            file "$binary" | grep -q 'arm64'
+            otool -l "$binary" | grep -A 4 'LC_BUILD_VERSION' | grep -q 'minos 15.0'
+            if otool -L "$binary" | grep -Eq '/opt/homebrew|/usr/local'; then
+              echo "Unexpected Homebrew runtime dependency in $binary" >&2
+              exit 1
+            fi
+          done
+          "$ffmpeg" -hide_banner -encoders 2>&1 | grep -q h264_videotoolbox
+          "$ffmpeg" -hide_banner -encoders 2>&1 | grep -q libx264
+          "$ffmpeg" -hide_banner -encoders 2>&1 | grep -q libmp3lame
+          "$ffmpeg" -hide_banner -encoders 2>&1 | grep -q libopus
+          "$ffmpeg" -hide_banner -encoders 2>&1 | grep -q libx265
+          "$ffmpeg" -hide_banner -encoders 2>&1 | grep -q libvpx
+          "$ffmpeg" -hide_banner -encoders 2>&1 | grep -q libvpx-vp9
+          "$ffmpeg" -hide_banner -encoders 2>&1 | grep -q libvorbis
+          "$ffmpeg" -hide_banner -encoders 2>&1 | grep -q libsvtav1
+          "$ffmpeg" -hide_banner -encoders 2>&1 | grep -q ' aac '
+          "$ffmpeg" -hide_banner -y -f lavfi -i 'testsrc2=duration=1:size=320x240:rate=30' \
+            -f lavfi -i 'sine=frequency=1000:sample_rate=48000:duration=1' \
+            -c:v libx264 -preset ultrafast -b:v 500k -c:a aac -b:a 96k -shortest \
+            "$RUNNER_TEMP/ffmpeg-smoke.mp4"
+          "$ffprobe" -v error -select_streams v:0 -show_entries stream=codec_name \
+            -of default=noprint_wrappers=1:nokey=1 "$RUNNER_TEMP/ffmpeg-smoke.mp4" | grep -qx h264
+          "$ffmpeg" -hide_banner -v error -y -f lavfi -i 'testsrc2=duration=1:size=320x240:rate=24' \
+            -c:v libx265 -preset ultrafast -x265-params log-level=error "$RUNNER_TEMP/ffmpeg-hevc-smoke.mp4"
+          "$ffprobe" -v error -select_streams v:0 -show_entries stream=codec_name \
+            -of default=noprint_wrappers=1:nokey=1 "$RUNNER_TEMP/ffmpeg-hevc-smoke.mp4" | grep -qx hevc
+          "$ffmpeg" -hide_banner -v error -y -f lavfi -i 'testsrc2=duration=1:size=320x240:rate=24' \
+            -pix_fmt yuv420p10le -c:v libx265 -preset ultrafast -x265-params log-level=error \
+            "$RUNNER_TEMP/ffmpeg-hevc10-smoke.mp4"
+          "$ffprobe" -v error -select_streams v:0 -show_entries stream=pix_fmt \
+            -of default=noprint_wrappers=1:nokey=1 "$RUNNER_TEMP/ffmpeg-hevc10-smoke.mp4" | grep -qx yuv420p10le
+          "$ffmpeg" -hide_banner -v error -y -f lavfi -i 'testsrc2=duration=1:size=320x240:rate=24' \
+            -pix_fmt yuv420p12le -c:v libx265 -preset ultrafast -x265-params log-level=error \
+            "$RUNNER_TEMP/ffmpeg-hevc12-smoke.mp4"
+          "$ffprobe" -v error -select_streams v:0 -show_entries stream=pix_fmt \
+            -of default=noprint_wrappers=1:nokey=1 "$RUNNER_TEMP/ffmpeg-hevc12-smoke.mp4" | grep -qx yuv420p12le
+          "$ffmpeg" -hide_banner -v error -y -f lavfi -i 'testsrc2=duration=1:size=320x240:rate=24' \
+            -c:v libvpx -deadline realtime -cpu-used 8 -b:v 500k "$RUNNER_TEMP/ffmpeg-vp8-smoke.webm"
+          "$ffprobe" -v error -select_streams v:0 -show_entries stream=codec_name \
+            -of default=noprint_wrappers=1:nokey=1 "$RUNNER_TEMP/ffmpeg-vp8-smoke.webm" | grep -qx vp8
+          "$ffmpeg" -hide_banner -v error -y -f lavfi -i 'testsrc2=duration=1:size=320x240:rate=24' \
+            -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -b:v 500k "$RUNNER_TEMP/ffmpeg-vp9-smoke.webm"
+          "$ffprobe" -v error -select_streams v:0 -show_entries stream=codec_name \
+            -of default=noprint_wrappers=1:nokey=1 "$RUNNER_TEMP/ffmpeg-vp9-smoke.webm" | grep -qx vp9
+          "$ffmpeg" -hide_banner -v error -y -f lavfi -i 'testsrc2=duration=1:size=320x240:rate=24' \
+            -c:v libsvtav1 -preset 12 -crf 45 "$RUNNER_TEMP/ffmpeg-av1-smoke.mkv"
+          "$ffmpeg" -hide_banner -v error -i "$RUNNER_TEMP/ffmpeg-smoke.mp4" \
+            -vf scale=160:120 -f null -
+          "$ffmpeg" -hide_banner -y -f lavfi -i 'testsrc2=duration=1:size=320x240:rate=30' \
+            -c:v h264_videotoolbox -b:v 500k "$RUNNER_TEMP/ffmpeg-videotoolbox-smoke.mp4"
+          "$ffprobe" -v error -select_streams v:0 -show_entries stream=codec_name \
+            -of default=noprint_wrappers=1:nokey=1 "$RUNNER_TEMP/ffmpeg-videotoolbox-smoke.mp4" | grep -qx h264
+          "$ffmpeg" -hide_banner -v error -y -f lavfi \
+            -i 'sine=frequency=440:sample_rate=48000:duration=1' -ac 2 \
+            -c:a libopus "$RUNNER_TEMP/ffmpeg-opus-smoke.ogg"
+          "$ffmpeg" -hide_banner -v error -y -f lavfi \
+            -i 'sine=frequency=440:sample_rate=44100:duration=1' \
+            -c:a libmp3lame "$RUNNER_TEMP/ffmpeg-mp3-smoke.mp3"
+          "$ffmpeg" -hide_banner -v error -y -f lavfi \
+            -i 'sine=frequency=440:sample_rate=48000:duration=1' \
+            -c:a libvorbis "$RUNNER_TEMP/ffmpeg-vorbis-smoke.ogg"
+          "$ffprobe" -v error -select_streams a:0 -show_entries stream=codec_name \
+            -of default=noprint_wrappers=1:nokey=1 "$RUNNER_TEMP/ffmpeg-opus-smoke.ogg" | grep -qx opus
+          "$ffprobe" -v error -select_streams a:0 -show_entries stream=codec_name \
+            -of default=noprint_wrappers=1:nokey=1 "$RUNNER_TEMP/ffmpeg-mp3-smoke.mp3" | grep -qx mp3
+          "$ffprobe" -v error -select_streams a:0 -show_entries stream=codec_name \
+            -of default=noprint_wrappers=1:nokey=1 "$RUNNER_TEMP/ffmpeg-vorbis-smoke.ogg" | grep -qx vorbis
+
+      - name: Check out Homebrew tap
+        uses: actions/checkout@v7
+        with:
+          repository: magalab/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Preflight Homebrew formula
+        env:
+          FFMPEG_VERSION: ${{ steps.release.outputs.version }}
+          TAP_DIRECTORY: tap
+          PUBLISH_TAP: false
+        run: |
+          PACKAGE_SHA256="$(awk '{print $1}' "dist/ffmpeg-${FFMPEG_VERSION}-macos15-arm64.tar.gz.sha256")" \
+            ./scripts/publish-tap-formula.sh
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version='${{ steps.release.outputs.version }}'
+          tag="ffmpeg-v$version"
+          shopt -s nullglob
+          assets=(dist/ffmpeg-"$version"-macos15-arm64*)
+          ((${#assets[@]} > 0))
+          gh release create "$tag" "${assets[@]}" --title "FFmpeg $version for macOS arm64" \
+            --notes "FFmpeg $version for Apple Silicon Macs running macOS 15 or later. Includes x264 H.264, x265 HEVC, libvpx VP8/VP9, SVT-AV1, LAME MP3, libopus, and libvorbis encoding. Source archives and license materials are attached."
+
+      - name: Commit updated Homebrew tap formula
+        env:
+          FFMPEG_VERSION: ${{ steps.release.outputs.version }}
+          TAP_DIRECTORY: tap
+          PUBLISH_TAP: true
+        run: |
+          PACKAGE_SHA256="$(awk '{print $1}' "dist/ffmpeg-${FFMPEG_VERSION}-macos15-arm64.tar.gz.sha256")" \
+            ./scripts/publish-tap-formula.sh
+
+      - name: Install and test the published tap formula
+        run: |
+          set -euo pipefail
+          brew tap magalab/homebrew-tap
+          brew install magalab/homebrew-tap/ffmpeg
+          brew test ffmpeg

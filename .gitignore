@@ -1,0 +1,26 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode and macOS build products
+DerivedData/
+build/
+dist/
+*.dSYM/
+*.xcarchive/
+*.app/
+
+# FFmpeg build outputs and generated files
+/ffmpeg/
+/ffprobe
+/include/
+/lib/
+/share/
+/pkgconfig/
+/config.h
+/config.mak
+/ffbuild/
+
+# Local planning and scratch files
+/tmp/
