@@ -13,6 +13,8 @@ permissions:
 
 jobs:
   build:
+    outputs:
+      version: ${{ steps.release.outputs.version }}
     runs-on: macos-15
     steps:
       - name: Check out repository
@@ -166,22 +168,6 @@ jobs:
           "$ffprobe" -v error -select_streams a:0 -show_entries stream=codec_name \
             -of default=noprint_wrappers=1:nokey=1 "$RUNNER_TEMP/ffmpeg-vorbis-smoke.ogg" | grep -qx vorbis
 
-      - name: Check out Homebrew tap
-        uses: actions/checkout@v7
-        with:
-          repository: magalab/homebrew-tap
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          path: tap
-
-      - name: Preflight Homebrew formula
-        env:
-          FFMPEG_VERSION: ${{ steps.release.outputs.version }}
-          TAP_DIRECTORY: tap
-          PUBLISH_TAP: false
-        run: |
-          PACKAGE_SHA256="$(awk '{print $1}' "dist/ffmpeg-${FFMPEG_VERSION}-macos15-arm64.tar.gz.sha256")" \
-            ./scripts/publish-tap-formula.sh
-
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -195,15 +181,55 @@ jobs:
           gh release create "$tag" "${assets[@]}" --title "FFmpeg $version for macOS arm64" \
             --notes "FFmpeg $version for Apple Silicon Macs running macOS 15 or later. Includes x264 H.264, x265 HEVC, libvpx VP8/VP9, SVT-AV1, LAME MP3, libopus, and libvorbis encoding. Source archives and license materials are attached."
 
-      - name: Commit updated Homebrew tap formula
-        env:
-          FFMPEG_VERSION: ${{ steps.release.outputs.version }}
-          TAP_DIRECTORY: tap
-          PUBLISH_TAP: true
-        run: |
-          PACKAGE_SHA256="$(awk '{print $1}' "dist/ffmpeg-${FFMPEG_VERSION}-macos15-arm64.tar.gz.sha256")" \
-            ./scripts/publish-tap-formula.sh
+  homebrew:
+    name: Update Homebrew tap
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out project repository
+        uses: actions/checkout@v7
 
+      - name: Download release package
+        id: download
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FFMPEG_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          gh release download "ffmpeg-v${FFMPEG_VERSION}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "ffmpeg-${FFMPEG_VERSION}-macos15-arm64.tar.gz" \
+            --dir release-assets
+          package="release-assets/ffmpeg-${FFMPEG_VERSION}-macos15-arm64.tar.gz"
+          [[ -f "$package" ]] || { echo "Missing release asset: $package" >&2; exit 1; }
+          package_sha256="$(sha256sum "$package" | awk '{print $1}')"
+          echo "package_sha256=$package_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Check out Homebrew tap
+        uses: actions/checkout@v7
+        with:
+          repository: magalab/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Update formula and push tap
+        env:
+          FFMPEG_VERSION: ${{ needs.build.outputs.version }}
+          PACKAGE_SHA256: ${{ steps.download.outputs.package_sha256 }}
+          TAP_DIRECTORY: tap
+        run: |
+          ./scripts/publish-tap-formula.sh
+
+  test-homebrew:
+    name: Install and test Homebrew formula
+    needs: homebrew
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
       - name: Install and test the published tap formula
         run: |
           set -euo pipefail

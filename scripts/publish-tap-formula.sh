@@ -5,22 +5,20 @@ fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 : "${FFMPEG_VERSION:?Set FFMPEG_VERSION.}"
 : "${PACKAGE_SHA256:?Set PACKAGE_SHA256 to the Release tarball SHA-256.}"
 : "${TAP_DIRECTORY:?Set TAP_DIRECTORY to the checked-out Homebrew tap.}"
-PUBLISH_TAP="${PUBLISH_TAP:-true}"
 
 [[ "$FFMPEG_VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || fail "Invalid version."
 [[ "$PACKAGE_SHA256" =~ ^[[:xdigit:]]{64}$ ]] || fail "Invalid package SHA-256."
-[[ "$PUBLISH_TAP" == true || "$PUBLISH_TAP" == false ]] || fail "PUBLISH_TAP must be true or false."
 
 [[ -d "$TAP_DIRECTORY/.git" ]] || fail "TAP_DIRECTORY is not a checked-out Git repository: $TAP_DIRECTORY"
 
 mkdir -p "$TAP_DIRECTORY/Formula"
 cat > "$TAP_DIRECTORY/Formula/ffmpeg.rb" <<EOF
 class Ffmpeg < Formula
-  desc "FFmpeg and ffprobe for Apple Silicon Macs"
+  desc "Video and audio transcoding tools for Apple Silicon"
   homepage "https://github.com/magalab/ffmpeg"
   url "https://github.com/magalab/ffmpeg/releases/download/ffmpeg-v${FFMPEG_VERSION}/ffmpeg-${FFMPEG_VERSION}-macos15-arm64.tar.gz"
-  sha256 "${PACKAGE_SHA256}"
   version "${FFMPEG_VERSION}"
+  sha256 "${PACKAGE_SHA256}"
   license "GPL-2.0-or-later"
 
   depends_on arch: :arm64
@@ -32,6 +30,14 @@ class Ffmpeg < Formula
   end
 
   test do
+    probe_codec = lambda do |file, stream|
+      shell_output(
+        "#{bin}/ffprobe -v error -select_streams #{stream} " \
+          "-show_entries stream=codec_name " \
+          "-of default=noprint_wrappers=1:nokey=1 #{testpath}/#{file}"
+      ).strip
+    end
+
     assert_match version.to_s, shell_output("#{bin}/ffmpeg -version")
     assert_match version.to_s, shell_output("#{bin}/ffprobe -version")
     output = shell_output("#{bin}/ffmpeg -hide_banner -encoders 2>&1")
@@ -49,57 +55,47 @@ class Ffmpeg < Formula
     system bin/"ffmpeg", "-hide_banner", "-v", "error", "-y", "-f", "lavfi",
            "-i", "testsrc2=duration=1:size=320x240:rate=30", "-c:v",
            "libx264", "-preset", "ultrafast", "-b:v", "500k", "#{testpath}/smoke.mp4"
-    assert_match "h264", shell_output("#{bin}/ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 #{testpath}/smoke.mp4")
+    assert_equal "h264", probe_codec.call("smoke.mp4", "v:0")
 
     system bin/"ffmpeg", "-hide_banner", "-v", "error", "-y", "-f", "lavfi",
            "-i", "sine=frequency=440:sample_rate=44100:duration=1", "-c:a",
            "libmp3lame", "#{testpath}/smoke.mp3"
-    assert_match "mp3", shell_output("#{bin}/ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 #{testpath}/smoke.mp3")
+    assert_equal "mp3", probe_codec.call("smoke.mp3", "a:0")
 
     system bin/"ffmpeg", "-hide_banner", "-v", "error", "-y", "-f", "lavfi",
            "-i", "sine=frequency=440:sample_rate=48000:duration=1", "-c:a",
            "libopus", "#{testpath}/smoke.opus"
-    assert_match "opus", shell_output("#{bin}/ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 #{testpath}/smoke.opus")
+    assert_equal "opus", probe_codec.call("smoke.opus", "a:0")
 
     system bin/"ffmpeg", "-hide_banner", "-v", "error", "-y", "-f", "lavfi",
            "-i", "testsrc2=duration=1:size=320x240:rate=24", "-c:v", "libx265",
            "-preset", "ultrafast", "-x265-params", "log-level=error", "#{testpath}/smoke-hevc.mp4"
-    assert_match "hevc", shell_output("#{bin}/ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 #{testpath}/smoke-hevc.mp4")
+    assert_equal "hevc", probe_codec.call("smoke-hevc.mp4", "v:0")
 
     system bin/"ffmpeg", "-hide_banner", "-v", "error", "-y", "-f", "lavfi",
            "-i", "testsrc2=duration=1:size=320x240:rate=24", "-c:v", "libvpx-vp9",
            "-deadline", "realtime", "-cpu-used", "8", "-b:v", "500k", "#{testpath}/smoke-vp9.webm"
-    assert_match "vp9", shell_output("#{bin}/ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 #{testpath}/smoke-vp9.webm")
+    assert_equal "vp9", probe_codec.call("smoke-vp9.webm", "v:0")
 
     system bin/"ffmpeg", "-hide_banner", "-v", "error", "-y", "-f", "lavfi",
            "-i", "testsrc2=duration=1:size=320x240:rate=24", "-c:v", "libsvtav1",
            "-preset", "12", "-crf", "45", "#{testpath}/smoke-av1.mkv"
-    assert_match "av1", shell_output("#{bin}/ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 #{testpath}/smoke-av1.mkv")
+    assert_equal "av1", probe_codec.call("smoke-av1.mkv", "v:0")
 
     system bin/"ffmpeg", "-hide_banner", "-v", "error", "-y", "-f", "lavfi",
            "-i", "sine=frequency=440:sample_rate=48000:duration=1", "-c:a",
            "libvorbis", "#{testpath}/smoke-vorbis.ogg"
-    assert_match "vorbis", shell_output("#{bin}/ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 #{testpath}/smoke-vorbis.ogg")
+    assert_equal "vorbis", probe_codec.call("smoke-vorbis.ogg", "a:0")
   end
 end
 EOF
-
-brew tap magalab/homebrew-tap
-BREW_TAP_DIRECTORY="$(brew --repository magalab/homebrew-tap)"
-mkdir -p "$BREW_TAP_DIRECTORY/Formula"
-cp "$TAP_DIRECTORY/Formula/ffmpeg.rb" "$BREW_TAP_DIRECTORY/Formula/ffmpeg.rb"
-brew style --formula magalab/homebrew-tap/ffmpeg
-brew audit --formula magalab/homebrew-tap/ffmpeg
-if [[ "$PUBLISH_TAP" == false ]]; then
-  printf 'Tap formula generated and checked; no tap commit or push requested.\n'
-  exit 0
-fi
 
 git -C "$TAP_DIRECTORY" add Formula/ffmpeg.rb
 if git -C "$TAP_DIRECTORY" diff --cached --quiet; then
   printf 'Tap formula is already current.\n'
   exit 0
 fi
-git -C "$TAP_DIRECTORY" -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-  commit -m "ffmpeg: update to $FFMPEG_VERSION"
-git -C "$TAP_DIRECTORY" push origin HEAD
+git -C "$TAP_DIRECTORY" config user.name 'github-actions[bot]'
+git -C "$TAP_DIRECTORY" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+git -C "$TAP_DIRECTORY" commit -m "ffmpeg $FFMPEG_VERSION"
+git -C "$TAP_DIRECTORY" push
