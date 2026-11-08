@@ -31,11 +31,12 @@ class Ffmpeg < Formula
 
   test do
     probe_codec = lambda do |file, stream|
-      shell_output(
-        "#{bin}/ffprobe -v error -select_streams #{stream} " \
-          "-show_entries stream=codec_name " \
-          "-of default=noprint_wrappers=1:nokey=1 #{testpath}/#{file}"
-      ).strip
+      command = [
+        "#{bin}/ffprobe -v error -select_streams #{stream}",
+        "-show_entries stream=codec_name",
+        "-of default=noprint_wrappers=1:nokey=1 #{testpath}/#{file}",
+      ].join(" ")
+      shell_output(command).strip
     end
 
     assert_match version.to_s, shell_output("#{bin}/ffmpeg -version")
